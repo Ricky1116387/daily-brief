@@ -6,7 +6,7 @@
 数据源（均为公开 RSS / JSON 接口）
   - CNBC Top News      https://www.cnbc.com/id/100003114/device/rss/rss.html
   - CNBC Markets       https://www.cnbc.com/id/20910258/device/rss/rss.html
-  - Yahoo Finance      https://feeds.finance.yahoo.com/rss/2.0/headline
+  - 华尔街见闻          https://dedicated.wallstreetcn.com/rss.xml
   - MarketWatch        https://feeds.content.dowjones.io/public/rss/mw_topstories
 行情
   - CNBC Quote API     quote.cnbc.com
@@ -81,8 +81,9 @@ QUOTE_SYMBOLS = [
 FEEDS = [
     ("CNBC",        "https://www.cnbc.com/id/100003114/device/rss/rss.html"),
     ("CNBC 市场",   "https://www.cnbc.com/id/20910258/device/rss/rss.html"),
-    ("华尔街见闻", "https://dedicated.wallstreetcn.com/rss.xml"),
-    ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
+    ("CNBC 财报",   "https://www.cnbc.com/id/10000664/device/rss/rss.html"),
+    ("CNBC 投资",   "https://www.cnbc.com/id/15839069/device/rss/rss.html"),
+    ("华尔街见闻",   "https://dedicated.wallstreetcn.com/rss.xml"),
 ]
 
 HEADERS = {
@@ -277,6 +278,86 @@ def score_item(title: str, pub, now) -> float:
     return score
 
 
+def topic_key(title: str) -> frozenset:
+    """提取标题里的主体实体，用于跨语言去重。
+
+    中英文标题字形完全不同，无法直接比对。这里改为提取共同出现的主体：
+    公司名、机构名、关键数字。两条标题共享足够多主体即视为同一事件。
+    """
+    t = title.lower()
+    ents = set()
+
+    # 公司 / 机构 / 人物（中英文都映射到统一标签）
+    ent_map = {
+        "openai": "openai", "英伟达": "nvidia", "nvidia": "nvidia",
+        "meta": "meta", "facebook": "meta", "苹果": "apple", "apple": "apple",
+        "特斯拉": "tesla", "tesla": "tesla", "微软": "microsoft", "microsoft": "microsoft",
+        "亚马逊": "amazon", "amazon": "amazon", "谷歌": "google", "alphabet": "google",
+        "google": "google", "英特尔": "intel", "intel": "intel",
+        "台积电": "tsmc", "tsmc": "tsmc", "三星": "samsung", "samsung": "samsung",
+        "软银": "softbank", "softbank": "softbank", "甲骨文": "oracle", "oracle": "oracle",
+        "高盛": "goldman", "goldman": "goldman", "摩根": "morgan", "morgan": "morgan",
+        "美联储": "fed", "fed": "fed", "鲍威尔": "powell", "powell": "powell",
+        "日本": "japan", "japan": "japan", "中国": "china", "china": "china",
+        "欧元区": "eurozone", "英国": "uk", "德国": "germany",
+        "英伟达": "nvidia", "amd": "amd", "博通": "broadcom", "broadcom": "broadcom",
+        "存储": "memory", "芯片": "chip", "半导体": "chip", "semiconductor": "chip", "chip": "chip",
+        "财报": "earnings", "earnings": "earnings", "估值": "valuation", "valuation": "valuation",
+        "融资": "funding", "funding": "funding", "ipo": "ipo",
+        "通胀": "inflation", "inflation": "inflation", "cpi": "cpi",
+        "美债": "treasury", "treasury": "treasury", "收益率": "yield", "yield": "yield",
+        "原油": "oil", "oil": "oil", "黄金": "gold", "gold": "gold",
+        "比特币": "btc", "bitcoin": "btc", "裁员": "layoff", "layoff": "layoff",
+        "关税": "tariff", "tariff": "tariff", "ai": "ai", "人工智能": "ai",
+    }
+    for kw, tag in ent_map.items():
+        if kw in t:
+            ents.add(tag)
+
+    # 关键数字（金额、百分点、年份），去掉常见噪声数字
+    for num in re.findall(r"\d[\d,\.]{1,}", t):
+        clean = num.rstrip(".,")
+        if len(clean.replace(",", "").replace(".", "")) >= 2:
+            ents.add("n:" + clean.replace(",", ""))
+    return frozenset(ents)
+
+
+# 高辨识度主体：命中其一基本可确定是同一事件
+STRONG_ENTS = {
+    "openai", "nvidia", "meta", "apple", "tesla", "microsoft", "amazon", "google",
+    "intel", "tsmc", "samsung", "softbank", "oracle", "goldman", "morgan", "amd",
+    "broadcom", "fed", "powell",
+}
+
+# 泛词：单独命中不足以判定同一事件
+WEAK_ENTS = {
+    "chip", "earnings", "valuation", "funding", "ipo", "inflation", "cpi",
+    "treasury", "yield", "oil", "gold", "btc", "layoff", "tariff", "ai",
+    "japan", "china", "eurozone", "uk", "germany", "memory",
+}
+
+
+def is_same_event(a: frozenset, b: frozenset) -> bool:
+    """判断两条标题是否在讲同一件事。"""
+    if not a or not b:
+        return False
+    inter = a & b
+    if not inter:
+        return False
+
+    strong_inter = inter & STRONG_ENTS
+    # 共享任意一个高辨识度公司/机构名 → 同一事件
+    if len(strong_inter) >= 1:
+        return True
+
+    # 共享数字（金额/百分比）+ 至少一个实体 → 很可能同一事件
+    if any(x.startswith("n:") for x in inter) and len(inter) >= 2:
+        return True
+
+    # 弱词重合比例极高（≥70%）才算
+    return len(inter) / min(len(a), len(b)) >= 0.7
+
+
 def select_items(all_items, cfg):
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=cfg["hours_lookback"])
@@ -297,11 +378,40 @@ def select_items(all_items, cfg):
             "title": title, "link": link, "pub": pub,
             "summary": summary, "source": source,
             "score": score_item(title, pub, now),
+            "topic": topic_key(title),
         })
 
     candidates.sort(key=lambda x: x["score"], reverse=True)
-    log.info("  去重后候选 %d 条，取前 %d 条", len(candidates), cfg["total_items"])
-    return candidates[: cfg["total_items"]]
+
+    # 跨语言事件去重：按分数从高到低，跳过与已选条目属于同一事件的
+    picked = []
+    for c in candidates:
+        if any(is_same_event(c["topic"], p["topic"]) for p in picked):
+            continue
+        picked.append(c)
+        if len(picked) >= cfg["total_items"]:
+            break
+
+    # 给中文源保底名额，避免被英文源挤占
+    cn_quota = cfg.get("cn_min_items", 3)
+    cn_picked = [p for p in picked if p["source"] == "华尔街见闻"]
+    if len(cn_picked) < cn_quota:
+        need = cn_quota - len(cn_picked)
+        cn_pool = [c for c in candidates
+                   if c["source"] == "华尔街见闻"
+                   and c not in picked
+                   and not any(is_same_event(c["topic"], p["topic"]) for p in picked)]
+        # 用中文条目替换掉位置最低的英文条目
+        for c in cn_pool[:need]:
+            idx = next((i for i in range(len(picked) - 1, -1, -1)
+                        if picked[i]["source"] != "华尔街见闻"), None)
+            if idx is None:
+                break
+            picked[idx] = c
+            picked.sort(key=lambda x: x["score"], reverse=True)
+
+    log.info("  去重后候选 %d 条，跨语言去重后取 %d 条", len(candidates), len(picked))
+    return picked
 
 
 # ────────────────────────────── 中文要点 ──────────────────────────────
@@ -505,7 +615,7 @@ def build_html(quotes, items, config):
   <!-- 页脚 -->
   <tr><td style="padding:18px 26px 22px;background:#fafbfc;border-top:1px solid #eceff1;">
     <div style="font-size:11px;color:#90a4ae;line-height:1.8;">
-      本邮件由脚本自动生成，信息源为 CNBC、Yahoo Finance、MarketWatch 的公开 RSS 接口。<br>
+      本邮件由脚本自动生成，信息源为 CNBC、华尔街见闻、MarketWatch 的公开 RSS 接口。<br>
       中文标签由关键词规则自动匹配，仅供快速扫读，请以原文链接内容为准。<br>
       本简报不构成任何投资建议。
     </div>
@@ -530,7 +640,7 @@ def build_plain(quotes, items, config):
         lines.append(f"   {it['link']}")
         lines.append("")
     lines += ["-" * 46,
-              "信息源：CNBC / Yahoo Finance / MarketWatch 公开 RSS",
+              "信息源：CNBC / 华尔街见闻 / MarketWatch 公开 RSS",
               "本简报不构成投资建议。"]
     return "\n".join(lines)
 
