@@ -81,7 +81,7 @@ QUOTE_SYMBOLS = [
 FEEDS = [
     ("CNBC",        "https://www.cnbc.com/id/100003114/device/rss/rss.html"),
     ("CNBC 市场",   "https://www.cnbc.com/id/20910258/device/rss/rss.html"),
-    ("Yahoo Finance", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US"),
+    ("华尔街见闻", "https://dedicated.wallstreetcn.com/rss.xml"),
     ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
 ]
 
