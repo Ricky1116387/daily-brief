@@ -1,0 +1,18 @@
+{
+  "recipients": [
+    "Ricky.Jiang@yict.com.cn"
+  ],
+  "smtp": {
+    "host": "smtp.qq.com",
+    "port": 465,
+    "use_ssl": true,
+    "user": "1742942848@qq.com",
+    "password": "yaptjkgbltuybecg",
+    "sender_name": "每日财经简报"
+  },
+  "subject_prefix": "【美股晨报】",
+  "max_items_per_source": 8,
+  "total_items": 10,
+  "hours_lookback": 30,
+  "output_dir": "out"
+}
