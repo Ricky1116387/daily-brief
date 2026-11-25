@@ -1,7 +1,8 @@
 name: daily
 on:
   schedule:
-       - cron: '30 23 * * *'
+    - cron: '30 23 * * *'
+    - cron: '0 0 * * *'
   workflow_dispatch:
 jobs:
   build:
@@ -10,14 +11,31 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: 检查今天是否已发送
+        id: guard
+        run: |
+          if [ -f .last-run ] && grep -q "$(date -u +%F)" .last-run; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip == 'false'
         with:
           python-version: '3.11'
+
       - run: pip install requests
+        if: steps.guard.outputs.skip == 'false'
+
       - env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: steps.guard.outputs.skip == 'false'
         run: python daily_brief.py
-      - if: always()
+
+      - name: 心跳
+        if: always() && steps.guard.outputs.skip == 'false'
         run: |
           git config user.name "brief-bot"
           git config user.email "brief-bot@users.noreply.github.com"
